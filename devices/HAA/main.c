@@ -101,6 +101,7 @@
 #define PIN_GPIO                        "g"
 #define INITIAL_STATE                   "s"
 #define KILL_SWITCH                     "k"
+#define ACTION_CONDITION                "c"
 
 #define VALVE_SYSTEM_TYPE               "w"
 #define VALVE_MAX_DURATION              "d"
@@ -419,6 +420,8 @@ void autoswitch_task(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
+bool hkc_check_action_conditions(cJSON *json_context);
+
 void do_actions(cJSON *json_context, const uint8_t int_action) {
     char *action = malloc(2);
     itoa(int_action, action, 10);
@@ -440,7 +443,10 @@ void do_actions(cJSON *json_context, const uint8_t int_action) {
         cJSON *json_relays = cJSON_GetObjectItem(actions, DIGITAL_OUTPUTS_ARRAY);
         for(uint8_t i=0; i<cJSON_GetArraySize(json_relays); i++) {
             cJSON *json_relay = cJSON_GetArrayItem(json_relays, i);
-            
+
+            if (!hkc_check_action_conditions(json_relay))
+               continue;
+
             const uint8_t gpio = (uint8_t) cJSON_GetObjectItem(json_relay, PIN_GPIO)->valuedouble;
             
             bool output_value = false;
@@ -1410,6 +1416,38 @@ void hkc_autooff_setter_task(void *pvParameters) {
     
     free(autooff_setter_params);
     vTaskDelete(NULL);
+}
+
+// --- CHECK ACTION CONDITIONS
+bool hkc_check_action_conditions(cJSON *json_relay) {
+    bool condition_satisfied = true;
+    cJSON *json_conditions = cJSON_GetObjectItem(json_relay, ACTION_CONDITION);
+    if (json_conditions != NULL) {
+        for(uint8_t j=0; condition_satisfied && j<cJSON_GetArraySize(json_conditions); j++) {
+            const uint8_t gpio = (uint8_t) cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), PIN_GPIO)->valuedouble;
+            bool pullup_resistor = true;
+            if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), PULLUP_RESISTOR) != NULL &&
+                cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), PULLUP_RESISTOR)->valuedouble == 0) {
+                pullup_resistor = false;
+            }
+
+            bool is_set = true;
+            if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), BUTTON_PRESS_TYPE) != NULL &&
+                cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), BUTTON_PRESS_TYPE)->valuedouble == 0) {
+                is_set = false;
+            }
+
+            gpio_set_pullup(gpio, pullup_resistor, pullup_resistor);
+
+            condition_satisfied = gpio_read(gpio) == is_set;
+
+            if (!pullup_resistor)
+               gpio_set_pullup(gpio, true, true);
+
+            printf("HAA > Action condition GPIO %i, is_set=%i, satisfied=%i\n", gpio, is_set, condition_satisfied);
+       }
+    }
+    return condition_satisfied;
 }
 
 // --- IDENTIFY
