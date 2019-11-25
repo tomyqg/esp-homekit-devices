@@ -1441,9 +1441,6 @@ bool hkc_check_action_conditions(cJSON *json_relay) {
 
             condition_satisfied = gpio_read(gpio) == is_set;
 
-            if (!pullup_resistor)
-               gpio_set_pullup(gpio, true, true);
-
             printf("HAA > Action condition GPIO %i, is_set=%i, satisfied=%i\n", gpio, is_set, condition_satisfied);
        }
     }
