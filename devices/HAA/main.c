@@ -1425,10 +1425,12 @@ bool hkc_check_action_conditions(cJSON *json_relay) {
     if (json_conditions != NULL) {
         for(uint8_t j=0; condition_satisfied && j<cJSON_GetArraySize(json_conditions); j++) {
             const uint8_t gpio = (uint8_t) cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), PIN_GPIO)->valuedouble;
+            bool set_pullup_resistor = false;
             bool pullup_resistor = true;
-            if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), PULLUP_RESISTOR) != NULL &&
-                cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), PULLUP_RESISTOR)->valuedouble == 0) {
-                pullup_resistor = false;
+            if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), PULLUP_RESISTOR) != NULL ) {
+                pullup_resistor =
+                    (bool) cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), PULLUP_RESISTOR)->valuedouble;
+                set_pullup_resistor = true;
             }
 
             bool is_set = true;
@@ -1437,7 +1439,8 @@ bool hkc_check_action_conditions(cJSON *json_relay) {
                 is_set = false;
             }
 
-            gpio_set_pullup(gpio, pullup_resistor, pullup_resistor);
+            if ( set_pullup_resistor && !used_gpio[gpio] )
+               gpio_set_pullup(gpio, pullup_resistor, pullup_resistor);
 
             condition_satisfied = gpio_read(gpio) == is_set;
 
