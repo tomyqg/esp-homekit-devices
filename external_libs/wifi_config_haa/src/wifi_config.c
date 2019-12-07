@@ -6,6 +6,7 @@
 #include <esplibs/libmain.h>
 #include <espressif/esp_common.h>
 #include <lwip/sockets.h>
+#include <lwip/dhcp.h>
 
 #include <semphr.h>
 
@@ -17,19 +18,14 @@
 #include <rboot-api.h>
 #include <homekit/homekit.h>
 
-#define WIFI_CONFIG_SERVER_PORT 80
-
-#ifndef WIFI_CONFIG_CONNECT_TIMEOUT
-#define WIFI_CONFIG_CONNECT_TIMEOUT 15000
-#endif
+#define WIFI_CONFIG_SERVER_PORT         80
 
 #ifndef AUTO_OTA_TIMEOUT
-#define AUTO_OTA_TIMEOUT            90000
+#define AUTO_OTA_TIMEOUT                90000
 #endif
 
-#define DEBUG(message, ...) printf(">>> wifi_config: %s: " message "\n", __func__, ##__VA_ARGS__);
-#define INFO(message, ...) printf(">>> wifi_config: " message "\n", ##__VA_ARGS__);
-#define ERROR(message, ...) printf("!!! wifi_config: " message "\n", ##__VA_ARGS__);
+#define INFO(message, ...)              printf("HAA > " message "\n", ##__VA_ARGS__);
+#define ERROR(message, ...)             printf("HAA ! " message "\n", ##__VA_ARGS__);
 
 
 typedef enum {
@@ -43,9 +39,9 @@ typedef enum {
 typedef struct {
     char *ssid_prefix;
     char *password;
+    char *custom_hostname;
     void (*on_wifi_ready)();
 
-    TickType_t connect_start_time;
     ETSTimer sta_connect_timeout;
     TaskHandle_t http_task_handle;
     TaskHandle_t dns_task_handle;
@@ -66,9 +62,10 @@ typedef struct _client {
 
 ETSTimer auto_ota_timer;
 
-static int wifi_config_station_connect();
+static void wifi_config_station_connect();
 static void wifi_config_softap_start();
 static void wifi_config_softap_stop();
+void wifi_config_reset();
 
 static client_t *client_new() {
     client_t *client = malloc(sizeof(client_t));
@@ -82,8 +79,9 @@ static client_t *client_new() {
 
 
 static void client_free(client_t *client) {
-    if (client->body)
+    if (client->body) {
         free(client->body);
+    }
 
     free(client);
 }
@@ -105,7 +103,7 @@ static void client_send_chunk(client_t *client, const char *payload) {
 
 
 static void client_send_redirect(client_t *client, int code, const char *redirect_url) {
-    DEBUG("Redirecting to %s", redirect_url);
+    INFO("Redirecting to %s", redirect_url);
     char buffer[128];
     size_t len = snprintf(buffer, sizeof(buffer), "HTTP/1.1 %d \r\nLocation: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", code, redirect_url);
     client_send(client, buffer, len);
@@ -171,12 +169,9 @@ static void wifi_scan_done_cb(void *arg, sdk_scan_status_t status)
 
 static void wifi_scan_task(void *arg)
 {
-    INFO("Starting WiFi scan");
+    INFO("Start WiFi scan");
     while (true)
     {
-        if (sdk_wifi_get_opmode() != STATIONAP_MODE)
-            break;
-
         sdk_wifi_station_scan(NULL, wifi_scan_done_cb);
         vTaskDelay(10000 / portTICK_PERIOD_MS);
     }
@@ -263,7 +258,7 @@ static void wifi_config_server_on_settings(client_t *client) {
 
 
 static void wifi_config_server_on_settings_update(client_t *client) {
-    DEBUG("Update settings, body = %s", client->body);
+    INFO("Update settings, body = %s", client->body);
 
     form_param_t *form = form_params_parse((char *)client->body);
     if (!form) {
@@ -272,8 +267,8 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     }
     
     // Remove sated states
-    char *saved_state_id = malloc(3);
-    for (uint16_t int_saved_state_id=100; int_saved_state_id<=999; int_saved_state_id++) {
+    char *saved_state_id = malloc(4);
+    for (uint16_t int_saved_state_id=100; int_saved_state_id<=3099; int_saved_state_id++) {
         itoa(int_saved_state_id, saved_state_id, 10);
         sysparam_set_data(saved_state_id, NULL, 0, false);
     }
@@ -281,6 +276,7 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     
     form_param_t *conf_param = form_params_find(form, "conf");
     form_param_t *reset_param = form_params_find(form, "reset");
+    form_param_t *nowifi_param = form_params_find(form, "nowifi");
     form_param_t *ota_param = form_params_find(form, "ota");
     form_param_t *autoota_param = form_params_find(form, "autoota");
     form_param_t *ssid_param = form_params_find(form, "ssid");
@@ -290,7 +286,6 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     client_send(client, payload, sizeof(payload)-1);
 
     if (ssid_param->value) {
-        INFO("Setting new Wifi configuration");
         sysparam_set_string("wifi_ssid", ssid_param->value);
         if (password_param->value) {
             sysparam_set_string("wifi_password", password_param->value);
@@ -310,7 +305,6 @@ static void wifi_config_server_on_settings_update(client_t *client) {
         sdk_wifi_station_set_config(&sta_config);
         sdk_wifi_station_connect();
         sdk_wifi_station_set_auto_connect(true);
-        
     }
 
     if (conf_param->value) {
@@ -318,31 +312,31 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     }
     
     if (autoota_param) {
-        INFO("Enable Auto OTA Updates");
         sysparam_set_bool("aota", true);
     } else {
-        INFO("Disable Auto OTA Updates");
         sysparam_set_bool("aota", false);
     }
     
     sysparam_set_bool("setup", false);
     
-    vTaskDelay(300 / portTICK_PERIOD_MS);
-    sysparam_compact();
-    vTaskDelay(900 / portTICK_PERIOD_MS);
-    
     if (ota_param) {
-        INFO("Enable OTA Update");
         rboot_set_temp_rom(1);
     }
     
+    if (nowifi_param) {
+        wifi_config_reset();
+    }
+    
+    vTaskDelay(300 / portTICK_PERIOD_MS);
+    sysparam_compact();
+    vTaskDelay(700 / portTICK_PERIOD_MS);
+    
     if (reset_param) {
-        INFO("Reset HomeKit ID");
         homekit_server_reset();
     }
 
     INFO("Restarting...");
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
+    vTaskDelay(1500 / portTICK_PERIOD_MS);
     
     sdk_system_restart();
 }
@@ -366,7 +360,7 @@ static int wifi_config_server_on_url(http_parser *parser, const char *data, size
 
     if (client->endpoint == ENDPOINT_UNKNOWN) {
         char *url = strndup(data, length);
-        ERROR("Unknown endpoint: %s %s", http_method_str(parser->method), url);
+        ERROR("Unknown: %s %s", http_method_str(parser->method), url);
         free(url);
     }
 
@@ -402,7 +396,7 @@ static int wifi_config_server_on_message_complete(http_parser *parser) {
             break;
         }
         case ENDPOINT_UNKNOWN: {
-            DEBUG("Unknown endpoint");
+            INFO("Unknown");
             client_send_redirect(client, 302, "http://192.168.4.1/settings");
             break;
         }
@@ -426,7 +420,7 @@ static http_parser_settings wifi_config_http_parser_settings = {
 
 
 static void http_task(void *arg) {
-    INFO("Staring HTTP server");
+    INFO("Start HTTP server");
 
     struct sockaddr_in serv_addr;
     int listenfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -481,7 +475,7 @@ static void http_task(void *arg) {
             }
 
             if (data_len > 0) {
-                DEBUG("Got %d incomming data", data_len);
+                INFO("Got %d incomming data", data_len);
 
                 http_parser_execute(
                     &client->parser, &wifi_config_http_parser_settings,
@@ -503,7 +497,7 @@ static void http_task(void *arg) {
         client_free(client);
     }
 
-    INFO("Stopping HTTP server");
+    INFO("Stop HTTP server");
 
     lwip_close(listenfd);
     vTaskDelete(NULL);
@@ -511,13 +505,14 @@ static void http_task(void *arg) {
 
 
 static void http_start() {
-    xTaskCreate(http_task, "wifi_config HTTP", 512, NULL, 2, &context->http_task_handle);
+    xTaskCreate(http_task, "http_task", 512, NULL, 2, &context->http_task_handle);
 }
 
 
 static void http_stop() {
-    if (! context->http_task_handle)
+    if (! context->http_task_handle) {
         return;
+    }
 
     xTaskNotify(context->http_task_handle, 1, eSetValueWithOverwrite);
 }
@@ -525,7 +520,7 @@ static void http_stop() {
 
 static void dns_task(void *arg)
 {
-    INFO("Starting DNS server");
+    INFO("Start DNS server");
 
     ip4_addr_t server_addr;
     IP4_ADDR(&server_addr, 192, 168, 4, 1);
@@ -599,7 +594,7 @@ static void dns_task(void *arg)
         }
     }
 
-    INFO("Stopping DNS server");
+    INFO("Stop DNS server");
 
     lwip_close(fd);
 
@@ -608,7 +603,7 @@ static void dns_task(void *arg)
 
 
 static void dns_start() {
-    xTaskCreate(dns_task, "wifi_config DNS", 384, NULL, 2, &context->dns_task_handle);
+    xTaskCreate(dns_task, "dns_task", 384, NULL, 2, &context->dns_task_handle);
 }
 
 
@@ -630,8 +625,9 @@ static void wifi_config_context_free(wifi_config_context_t *context) {
     free(context);
 }
 
+
 static void wifi_config_softap_start() {
-    INFO("Starting AP mode");
+    INFO("Start AP");
 
     sdk_wifi_set_opmode(STATIONAP_MODE);
 
@@ -655,7 +651,7 @@ static void wifi_config_softap_start() {
     softap_config.max_connection = 2;
     softap_config.beacon_interval = 100;
 
-    DEBUG("Starting AP SSID=%s", softap_config.ssid);
+    INFO("Start AP SSID=%s", softap_config.ssid);
 
     struct ip_info ap_ip;
     IP4_ADDR(&ap_ip.ip, 192, 168, 4, 1);
@@ -671,9 +667,9 @@ static void wifi_config_softap_start() {
     wifi_networks_mutex = xSemaphoreCreateBinary();
     xSemaphoreGive(wifi_networks_mutex);
 
-    xTaskCreate(wifi_scan_task, "wifi_config scan", 384, NULL, 2, NULL);
+    xTaskCreate(wifi_scan_task, "wifi_scan_task", 384, NULL, 2, NULL);
 
-    INFO("Starting DHCP server");
+    INFO("Start DHCP server");
     dhcpserver_start(&first_client_ip, 4);
     dhcpserver_set_router(&ap_ip.ip);
     dhcpserver_set_dns(&ap_ip.ip);
@@ -684,104 +680,110 @@ static void wifi_config_softap_start() {
 
 
 static void wifi_config_softap_stop() {
+    LOCK_TCPIP_CORE();
     dhcpserver_stop();
     dns_stop();
     sdk_wifi_set_opmode(STATION_MODE);
+    UNLOCK_TCPIP_CORE();
 }
 
+
 static void wifi_config_sta_connect_timeout_callback(void *arg) {
+    struct netif *netif = sdk_system_get_netif(STATION_IF);
+    if (netif && !netif->hostname && context->custom_hostname) {
+        LOCK_TCPIP_CORE();
+        dhcp_release_and_stop(netif);
+        netif->hostname = context->custom_hostname;
+        dhcp_start(netif);
+        UNLOCK_TCPIP_CORE();
+        
+        INFO("Hostname: %s", context->custom_hostname);
+    }
+    
     if (sdk_wifi_station_get_connect_status() == STATION_GOT_IP) {
         // Connected to station, all is dandy
-        DEBUG("Successfully connected");
         sdk_os_timer_disarm(&context->sta_connect_timeout);
         
         wifi_config_softap_stop();
-        http_stop();
-        if (context->on_wifi_ready)
+        
+        if (context->on_wifi_ready) {
+            http_stop();
             context->on_wifi_ready();
+        }
+        
         wifi_config_context_free(context);
         context = NULL;
     }
 }
 
+
 static void auto_ota_run() {
-    INFO("Enable OTA Update");
+    INFO("OTA Update");
     rboot_set_temp_rom(1);
 
-    INFO("Restarting...");
     vTaskDelay(2000 / portTICK_PERIOD_MS);
     
     sdk_system_restart();
 }
 
-static int wifi_config_station_connect() {
+
+static void wifi_config_station_connect() {
     char *wifi_ssid = NULL;
     char *wifi_password = NULL;
     sysparam_get_string("wifi_ssid", &wifi_ssid);
     sysparam_get_string("wifi_password", &wifi_password);
-
-    sysparam_status_t status;
-    bool haa_setup = false;
-    status = sysparam_get_bool("setup", &haa_setup);
-    
-    if (status == SYSPARAM_OK && haa_setup == true && !context->on_wifi_ready) {
-        INFO("HAA Setup mode");
-        sysparam_set_bool("setup", false);
-
-        if (wifi_ssid) {
-            free(wifi_ssid);
-        }
-        if (wifi_password) {
-            free(wifi_password);
-        }
-        
-        sdk_os_timer_setfn(&auto_ota_timer, auto_ota_run, NULL);
-        bool auto_ota = false;
-        sysparam_get_bool("aota", &auto_ota);
-        if (auto_ota) {
-            sdk_os_timer_arm(&auto_ota_timer, AUTO_OTA_TIMEOUT, 0);
-        }
-        
-        return -1;
-    }
     
     if (!wifi_ssid) {
-        DEBUG("No configuration found");
-        if (wifi_password)
-            free(wifi_password);
-        return -1;
+        INFO("No WiFi config found");
+        
+        wifi_config_softap_start();
+    } else {
+
+        struct sdk_station_config sta_config;
+        memset(&sta_config, 0, sizeof(sta_config));
+        strncpy((char *)sta_config.ssid, wifi_ssid, sizeof(sta_config.ssid));
+        sta_config.ssid[sizeof(sta_config.ssid)-1] = 0;
+        if (wifi_password) {
+            strncpy((char *)sta_config.password, wifi_password, sizeof(sta_config.password));
+        }
+
+        sdk_wifi_station_set_config(&sta_config);
+        sdk_wifi_station_connect();
+        sdk_wifi_station_set_auto_connect(true);
+        
+        wifi_config_sta_connect_timeout_callback(context);
+        
+        sdk_os_timer_setfn(&context->sta_connect_timeout, wifi_config_sta_connect_timeout_callback, context);
+        sdk_os_timer_arm(&context->sta_connect_timeout, 333, 1);
+        
+        if (!context->on_wifi_ready) {
+            INFO("HAA Setup");
+            sysparam_set_bool("setup", false);
+
+            sdk_os_timer_setfn(&auto_ota_timer, auto_ota_run, NULL);
+            
+            bool auto_ota = false;
+            sysparam_get_bool("aota", &auto_ota);
+            if (auto_ota) {
+                sdk_os_timer_arm(&auto_ota_timer, AUTO_OTA_TIMEOUT, 0);
+            }
+            
+            wifi_config_softap_start();
+        }
+        
+        free(wifi_ssid);
     }
-
-    INFO("Found configuration, connecting to %s", wifi_ssid);
-
-    struct sdk_station_config sta_config;
-    memset(&sta_config, 0, sizeof(sta_config));
-    strncpy((char *)sta_config.ssid, wifi_ssid, sizeof(sta_config.ssid));
-    sta_config.ssid[sizeof(sta_config.ssid)-1] = 0;
-    if (wifi_password)
-        strncpy((char *)sta_config.password, wifi_password, sizeof(sta_config.password));
-
-    sdk_wifi_station_set_config(&sta_config);
-
-    sdk_wifi_station_connect();
-    sdk_wifi_station_set_auto_connect(true);
-
-    free(wifi_ssid);
-    if (wifi_password)
+    
+    if (wifi_password) {
         free(wifi_password);
-
-    context->connect_start_time = xTaskGetTickCount();
-    sdk_os_timer_setfn(&context->sta_connect_timeout, wifi_config_sta_connect_timeout_callback, context);
-    wifi_config_sta_connect_timeout_callback(context);
-    sdk_os_timer_arm(&context->sta_connect_timeout, 800, 1);
-
-    return 0;
+    }
 }
 
-void wifi_config_init(const char *ssid_prefix, const char *password, void (*on_wifi_ready)()) {
-    INFO("Initializing WiFi config");
+
+void wifi_config_init(const char *ssid_prefix, const char *password, void (*on_wifi_ready)(), const char *custom_hostname) {
+    INFO("WiFi config init");
     if (password && strlen(password) < 8) {
-        ERROR("Password should be at least 8 characters");
+        ERROR("Password must be at least 8 characters");
         return;
     }
 
@@ -791,18 +793,19 @@ void wifi_config_init(const char *ssid_prefix, const char *password, void (*on_w
     context->ssid_prefix = strndup(ssid_prefix, 33-7);
     if (password)
         context->password = strdup(password);
+    
+    if (custom_hostname)
+        context->custom_hostname = strdup(custom_hostname);
 
     context->on_wifi_ready = on_wifi_ready;
 
-    if (wifi_config_station_connect()) {
-        wifi_config_softap_start();
-    }
+    wifi_config_station_connect();
 }
 
 
 void wifi_config_reset() {
-    sysparam_set_string("wifi_ssid", "");
-    sysparam_set_string("wifi_password", "");
+    sysparam_set_data("wifi_ssid", NULL, 0, false);
+    sysparam_set_data("wifi_password", NULL, 0, false);
 }
 
 

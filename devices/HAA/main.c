@@ -1,7 +1,7 @@
 /*
  * Home Accessory Architect
  *
- * v0.7.8
+ * v0.7.10
  * 
  * Copyright 2019 José Antonio Jiménez Campos (@RavenSystem)
  *  
@@ -40,14 +40,14 @@
 
 #include <multipwm/multipwm.h>
 
-#include <dht/dht.h>
+#include <dht.h>
 #include <ds18b20/ds18b20.h>
 
 #include <cJSON.h>
 
 // Version
-#define FIRMWARE_VERSION                "0.7.8"
-#define FIRMWARE_VERSION_OCTAL          000710      // Matches as example: firmware_revision 2.3.8 = 02.03.10 (octal) = config_number 020310
+#define FIRMWARE_VERSION                "0.7.10"
+#define FIRMWARE_VERSION_OCTAL          000712      // Matches as example: firmware_revision 2.3.8 = 02.03.10 (octal) = config_number 020310
 
 // Characteristic types (ch_type)
 #define CH_TYPE_BOOL                    0
@@ -76,6 +76,7 @@
 
 // JSON
 #define GENERAL_CONFIG                  "c"
+#define CUSTOM_HOSTNAME                 "n"
 #define LOG_OUTPUT                      "o"
 #define ALLOWED_SETUP_MODE_TIME         "m"
 #define STATUS_LED_GPIO                 "l"
@@ -195,6 +196,10 @@
 #ifndef HAA_MAX_ACCESSORIES
 #define HAA_MAX_ACCESSORIES             4           // Max number of accessories before using a bridge
 #endif
+
+#define DEBUG(message, ...)             printf("HAA > %s: " message "\n", __func__, ##__VA_ARGS__);
+#define INFO(message, ...)              printf("HAA > " message "\n", ##__VA_ARGS__);
+#define ERROR(message, ...)             printf("HAA ! " message "\n", ##__VA_ARGS__);
 
 #define FREEHEAP()                      printf("HAA > Free Heap: %d\n", xPortGetFreeHeapSize())
 
@@ -351,13 +356,13 @@ void setup_mode_task() {
 }
 
 void setup_mode_call(const uint8_t gpio, void *args, const uint8_t param) {
-    printf("HAA > Checking setup mode call\n");
+    INFO("Checking setup mode call");
     
     if (setup_mode_time == 0 || xTaskGetTickCountFromISR() < setup_mode_time * 1000 / portTICK_PERIOD_MS) {
         led_blink(4);
         xTaskCreate(setup_mode_task, "setup_mode_task", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
     } else {
-        printf("HAA ! Setup mode not allowed after %i secs since boot. Repower device and try again\n", setup_mode_time);
+        ERROR("Setup mode not allowed after %i secs since boot. Repower device and try again", setup_mode_time);
     }
 }
 
@@ -377,7 +382,7 @@ void setup_mode_toggle() {
 void exit_emergency_setup_mode_task() {
     vTaskDelay(EXIT_EMERGENCY_SETUP_MODE_TIME / portTICK_PERIOD_MS);
     
-    printf("HAA > Disarming Emergency Setup Mode\n");
+    INFO("Disarming Emergency Setup Mode");
     sysparam_set_bool("setup", false);
 
     vTaskDelete(NULL);
@@ -385,7 +390,7 @@ void exit_emergency_setup_mode_task() {
 
 // -----
 void save_states() {
-    printf("HAA > Saving states\n");
+    INFO("Saving states");
     last_state_t *last_state = last_states;
     sysparam_status_t status;
     
@@ -409,7 +414,7 @@ void save_states() {
         }
         
         if (status != SYSPARAM_OK) {
-            printf("HAA ! Flash error saving states\n");
+            ERROR("Flash error saving states");
         }
         
         last_state = last_state->next;
@@ -454,12 +459,12 @@ void hkc_group_notify(homekit_characteristic_t *ch) {
 }
 
 homekit_value_t hkc_getter(const homekit_characteristic_t *ch) {
-    printf("HAA > Getter\n");
+    INFO("Getter");
     return ch->value;
 }
 
 void hkc_setter(homekit_characteristic_t *ch, const homekit_value_t value) {
-    printf("HAA > Setter\n");
+    INFO("Setter");
     ch->value = value;
     hkc_group_notify(ch);
     
@@ -481,15 +486,15 @@ void hkc_on_setter(homekit_characteristic_t *ch, const homekit_value_t value) {
     if (!ch_group->ch_sec || ch_group->ch_sec->value.bool_value) {
         if (ch->value.bool_value != value.bool_value) {
             led_blink(1);
-            printf("HAA > Setter ON\n");
+            INFO("Setter ON");
             
             ch->value = value;
             
             cJSON *json_context = ch->context;
             do_actions(json_context, (uint8_t) ch->value.bool_value);
             
-            if (ch->value.bool_value && cJSON_GetObjectItem(json_context, AUTOSWITCH_TIME) != NULL) {
-                const double autoswitch_time = cJSON_GetObjectItem(json_context, AUTOSWITCH_TIME)->valuedouble;
+            if (ch->value.bool_value && cJSON_GetObjectItemCaseSensitive(json_context, AUTOSWITCH_TIME) != NULL) {
+                const double autoswitch_time = cJSON_GetObjectItemCaseSensitive(json_context, AUTOSWITCH_TIME)->valuedouble;
                 if (autoswitch_time > 0) {
                     autooff_setter_params_t *autooff_setter_params = malloc(sizeof(autooff_setter_params_t));
                     autooff_setter_params->ch = ch;
@@ -536,7 +541,7 @@ void hkc_lock_setter(homekit_characteristic_t *ch, const homekit_value_t value) 
     if (!ch_group->ch_sec || ch_group->ch_sec->value.bool_value) {
         if (ch->value.int_value != value.int_value) {
             led_blink(1);
-            printf("HAA > Setter LOCK\n");
+            INFO("Setter LOCK");
             
             ch->value = value;
             ch_group->ch0->value = value;
@@ -544,8 +549,8 @@ void hkc_lock_setter(homekit_characteristic_t *ch, const homekit_value_t value) 
             cJSON *json_context = ch->context;
             do_actions(json_context, (uint8_t) ch->value.int_value);
             
-            if (ch->value.int_value == 0 && cJSON_GetObjectItem(json_context, AUTOSWITCH_TIME) != NULL) {
-                const double autoswitch_time = cJSON_GetObjectItem(json_context, AUTOSWITCH_TIME)->valuedouble;
+            if (ch->value.int_value == 0 && cJSON_GetObjectItemCaseSensitive(json_context, AUTOSWITCH_TIME) != NULL) {
+                const double autoswitch_time = cJSON_GetObjectItemCaseSensitive(json_context, AUTOSWITCH_TIME)->valuedouble;
                 if (autoswitch_time > 0) {
                     autooff_setter_params_t *autooff_setter_params = malloc(sizeof(autooff_setter_params_t));
                     autooff_setter_params->ch = ch;
@@ -570,7 +575,7 @@ void button_event(const uint8_t gpio, void *args, const uint8_t event_type) {
     ch_group_t *ch_group = ch_group_find(ch);
     if (!ch_group->ch_child || ch_group->ch_child->value.bool_value) {
         led_blink(event_type + 1);
-        printf("HAA > Setter EVENT %i\n", event_type);
+        INFO("Setter EVENT %i", event_type);
         
         homekit_characteristic_notify(ch, HOMEKIT_UINT8(event_type));
         
@@ -590,7 +595,7 @@ void sensor_1(const uint8_t gpio, void *args, const uint8_t type) {
         (type == TYPE_SENSOR_BOOL &&
         ch->value.bool_value == false)) {
         led_blink(1);
-        printf("HAA > Sensor activated\n");
+        INFO("Sensor ON");
         
         if (type == TYPE_SENSOR) {
             ch->value = HOMEKIT_UINT8(1);
@@ -603,8 +608,8 @@ void sensor_1(const uint8_t gpio, void *args, const uint8_t type) {
         cJSON *json_context = ch->context;
         do_actions(json_context, 1);
         
-        if (cJSON_GetObjectItem(json_context, AUTOSWITCH_TIME) != NULL) {
-            const double autoswitch_time = cJSON_GetObjectItem(json_context, AUTOSWITCH_TIME)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, AUTOSWITCH_TIME) != NULL) {
+            const double autoswitch_time = cJSON_GetObjectItemCaseSensitive(json_context, AUTOSWITCH_TIME)->valuedouble;
             if (autoswitch_time > 0) {
                 autooff_setter_params_t *autooff_setter_params = malloc(sizeof(autooff_setter_params_t));
                 autooff_setter_params->ch = ch;
@@ -624,7 +629,7 @@ void sensor_0(const uint8_t gpio, void *args, const uint8_t type) {
         (type == TYPE_SENSOR_BOOL &&
         ch->value.bool_value == true)) {
         led_blink(1);
-        printf("HAA > Sensor deactivated\n");
+        INFO("Sensor OFF");
         
         if (type == TYPE_SENSOR) {
             ch->value = HOMEKIT_UINT8(0);
@@ -645,7 +650,7 @@ void hkc_valve_setter(homekit_characteristic_t *ch, const homekit_value_t value)
     if (!ch_group->ch_sec || ch_group->ch_sec->value.bool_value) {
         if (ch->value.int_value != value.int_value) {
             led_blink(1);
-            printf("HAA > Setter VALVE\n");
+            INFO("Setter VALVE");
             
             ch->value = value;
             ch_group->ch1->value = value;
@@ -653,8 +658,8 @@ void hkc_valve_setter(homekit_characteristic_t *ch, const homekit_value_t value)
             cJSON *json_context = ch->context;
             do_actions(json_context, (uint8_t) ch->value.int_value);
             
-            if (ch->value.int_value == 1 && cJSON_GetObjectItem(json_context, AUTOSWITCH_TIME) != NULL) {
-                const double autoswitch_time = cJSON_GetObjectItem(json_context, AUTOSWITCH_TIME)->valuedouble;
+            if (ch->value.int_value == 1 && cJSON_GetObjectItemCaseSensitive(json_context, AUTOSWITCH_TIME) != NULL) {
+                const double autoswitch_time = cJSON_GetObjectItemCaseSensitive(json_context, AUTOSWITCH_TIME)->valuedouble;
                 if (autoswitch_time > 0) {
                     autooff_setter_params_t *autooff_setter_params = malloc(sizeof(autooff_setter_params_t));
                     autooff_setter_params->ch = ch;
@@ -700,15 +705,15 @@ void update_th(homekit_characteristic_t *ch, const homekit_value_t value) {
     ch_group_t *ch_group = ch_group_find(ch);
     if (!ch_group->ch_sec || ch_group->ch_sec->value.bool_value) {
         led_blink(1);
-        printf("HAA > Setter TH\n");
+        INFO("Setter TH");
         
         ch->value = value;
         
         cJSON *json_context = ch->context;
         
         float temp_deadband = 0;
-        if (cJSON_GetObjectItem(json_context, THERMOSTAT_DEADBAND) != NULL) {
-            temp_deadband = (float) cJSON_GetObjectItem(json_context, THERMOSTAT_DEADBAND)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_DEADBAND) != NULL) {
+            temp_deadband = (float) cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_DEADBAND)->valuedouble;
         }
         
         if (ch_group->ch1->value.bool_value) {
@@ -792,8 +797,8 @@ void th_input(const uint8_t gpio, void *args, const uint8_t type) {
         // Thermostat Type
         cJSON *json_context = ch->context;
         uint8_t th_type = THERMOSTAT_TYPE_HEATER;
-        if (cJSON_GetObjectItem(json_context, THERMOSTAT_TYPE) != NULL) {
-            th_type = (uint8_t) cJSON_GetObjectItem(json_context, THERMOSTAT_TYPE)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_TYPE) != NULL) {
+            th_type = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_TYPE)->valuedouble;
         }
         
         switch (type) {
@@ -851,13 +856,13 @@ void th_input_temp(const uint8_t gpio, void *args, const uint8_t type) {
         cJSON *json_context = ch->context;
         
         float th_min_temp = THERMOSTAT_DEFAULT_MIN_TEMP;
-        if (cJSON_GetObjectItem(json_context, THERMOSTAT_MIN_TEMP) != NULL) {
-            th_min_temp = (float) cJSON_GetObjectItem(json_context, THERMOSTAT_MIN_TEMP)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_MIN_TEMP) != NULL) {
+            th_min_temp = (float) cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_MIN_TEMP)->valuedouble;
         }
         
         float th_max_temp = THERMOSTAT_DEFAULT_MAX_TEMP;
-        if (cJSON_GetObjectItem(json_context, THERMOSTAT_MAX_TEMP) != NULL) {
-            th_max_temp = (float) cJSON_GetObjectItem(json_context, THERMOSTAT_MAX_TEMP)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_MAX_TEMP) != NULL) {
+            th_max_temp = (float) cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_MAX_TEMP)->valuedouble;
         }
         
         float set_h_temp = ch_group->ch5->value.float_value;
@@ -896,21 +901,21 @@ void temperature_timer_worker(void *args) {
     
     cJSON *json_context = ch->context;
     
-    const uint8_t sensor_gpio = (uint8_t) cJSON_GetObjectItem(json_context, TEMPERATURE_SENSOR_GPIO)->valuedouble;
+    const uint8_t sensor_gpio = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, TEMPERATURE_SENSOR_GPIO)->valuedouble;
     
     uint8_t sensor_type = 2;
-    if (cJSON_GetObjectItem(json_context, TEMPERATURE_SENSOR_TYPE) != NULL) {
-        sensor_type = (uint8_t) cJSON_GetObjectItem(json_context, TEMPERATURE_SENSOR_TYPE)->valuedouble;
+    if (cJSON_GetObjectItemCaseSensitive(json_context, TEMPERATURE_SENSOR_TYPE) != NULL) {
+        sensor_type = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, TEMPERATURE_SENSOR_TYPE)->valuedouble;
     }
     
     float temp_offset = 0;
-    if (cJSON_GetObjectItem(json_context, TEMPERATURE_OFFSET) != NULL) {
-        temp_offset = (float) cJSON_GetObjectItem(json_context, TEMPERATURE_OFFSET)->valuedouble;
+    if (cJSON_GetObjectItemCaseSensitive(json_context, TEMPERATURE_OFFSET) != NULL) {
+        temp_offset = (float) cJSON_GetObjectItemCaseSensitive(json_context, TEMPERATURE_OFFSET)->valuedouble;
     }
     
     float hum_offset = 0;
-    if (cJSON_GetObjectItem(json_context, HUMIDITY_OFFSET) != NULL) {
-        hum_offset = (float) cJSON_GetObjectItem(json_context, HUMIDITY_OFFSET)->valuedouble;
+    if (cJSON_GetObjectItemCaseSensitive(json_context, HUMIDITY_OFFSET) != NULL) {
+        hum_offset = (float) cJSON_GetObjectItemCaseSensitive(json_context, HUMIDITY_OFFSET)->valuedouble;
     }
     
     float humidity_value, temperature_value;
@@ -972,10 +977,10 @@ void temperature_timer_worker(void *args) {
             }
         }
         
-        printf("HAA > TEMP %g, HUM %g\n", temperature_value, humidity_value);
+        INFO("TEMP %g, HUM %g", temperature_value, humidity_value);
     } else {
         led_blink(5);
-        printf("HAA ! ERROR Sensor\n");
+        ERROR("ERROR Sensor");
         
         if (ch_group->ch5) {
             ch_group->ch3->value = HOMEKIT_UINT8(THERMOSTAT_MODE_OFF);
@@ -1095,12 +1100,12 @@ void rgbw_set_timer_worker() {
                 }
             }
             
-            //printf("HAA > RGBW -> %i, %i, %i, %i\n", multipwm_duty[lightbulb_group->pwm_r], multipwm_duty[lightbulb_group->pwm_g], multipwm_duty[lightbulb_group->pwm_g], multipwm_duty[lightbulb_group->pwm_w]);
+            //INFO("RGBW -> %i, %i, %i, %i", multipwm_duty[lightbulb_group->pwm_r], multipwm_duty[lightbulb_group->pwm_g], multipwm_duty[lightbulb_group->pwm_g], multipwm_duty[lightbulb_group->pwm_w]);
             
             lightbulb_group = lightbulb_group->next;
             
             if (channels_to_set == 0) {
-                printf("HAA > Color established\n");
+                INFO("Color established");
                 sdk_os_timer_disarm(pwm_timer);
                 setpwm_is_running = false;
                 lightbulb_group = NULL;
@@ -1111,7 +1116,7 @@ void rgbw_set_timer_worker() {
 
         setpwm_bool_semaphore = false;
     } else {
-        printf("HAA ! MISSED Color set\n");
+        ERROR("MISSED Color set");
     }
 }
 
@@ -1155,7 +1160,7 @@ void hkc_rgbw_setter_delayed(void *args) {
         setup_mode_toggle_upcount();
     }
     
-    printf("HAA > Target RGBW = %i, %i, %i, %i\n", lightbulb_group->target_r, lightbulb_group->target_g, lightbulb_group->target_b, lightbulb_group->target_w);
+    INFO("Target RGBW = %i, %i, %i, %i", lightbulb_group->target_r, lightbulb_group->target_g, lightbulb_group->target_b, lightbulb_group->target_w);
     
     if (!setpwm_is_running) {
         sdk_os_timer_arm(pwm_timer, RGBW_PERIOD, true);
@@ -1204,7 +1209,7 @@ void rgbw_brightness(const uint8_t gpio, void *args, const uint8_t type) {
 }
 
 void autodimmer_task(void *args) {
-    printf("HAA > AUTODimmer started\n");
+    INFO("AUTODimmer started");
     
     homekit_characteristic_t *ch = args;
     ch_group_t *ch_group = ch_group_find(ch);
@@ -1231,7 +1236,7 @@ void autodimmer_task(void *args) {
         }
     }
     
-    printf("HAA > AUTODimmer stopped\n");
+    INFO("AUTODimmer stopped");
     
     vTaskDelete(NULL);
 }
@@ -1246,7 +1251,7 @@ void no_autodimmer_called(void *args) {
 
 void autodimmer_call(homekit_characteristic_t *ch0, const homekit_value_t value) {
     lightbulb_group_t *lightbulb_group = lightbulb_group_find(ch0);
-    if (value.bool_value && lightbulb_group->autodimmer == 0) {
+    if (lightbulb_group->autodimmer_task_step == 0 || (value.bool_value && lightbulb_group->autodimmer == 0)) {
         hkc_rgbw_setter(ch0, value);
     } else if (lightbulb_group->autodimmer > 0) {
         lightbulb_group->autodimmer = 0;
@@ -1397,7 +1402,7 @@ void autoswitch_task(void *pvParameters) {
     vTaskDelay(autoswitch_params->time * 1000 / portTICK_PERIOD_MS);
     
     gpio_write(autoswitch_params->gpio, autoswitch_params->value);
-    printf("HAA > Autoswitch digital output GPIO %i -> %i\n", autoswitch_params->gpio, autoswitch_params->value);
+    INFO("Autoswitch digital output GPIO %i -> %i", autoswitch_params->gpio, autoswitch_params->value);
     
     free(autoswitch_params);
     vTaskDelete(NULL);
@@ -1439,39 +1444,39 @@ void do_actions(cJSON *json_context, const uint8_t int_action) {
     char *action = malloc(2);
     itoa(int_action, action, 10);
     
-    if (cJSON_GetObjectItem(json_context, action) != NULL) {
-        cJSON *actions = cJSON_GetObjectItem(json_context, action);
+    if (cJSON_GetObjectItemCaseSensitive(json_context, action) != NULL) {
+        cJSON *actions = cJSON_GetObjectItemCaseSensitive(json_context, action);
         
         // Copy actions
-        if(cJSON_GetObjectItem(actions, COPY_ACTIONS) != NULL) {
-            const uint8_t new_action = (uint8_t) cJSON_GetObjectItem(actions, COPY_ACTIONS)->valuedouble;
+        if(cJSON_GetObjectItemCaseSensitive(actions, COPY_ACTIONS) != NULL) {
+            const uint8_t new_action = (uint8_t) cJSON_GetObjectItemCaseSensitive(actions, COPY_ACTIONS)->valuedouble;
             itoa(new_action, action, 10);
             
-            if (cJSON_GetObjectItem(json_context, action) != NULL) {
-                actions = cJSON_GetObjectItem(json_context, action);
+            if (cJSON_GetObjectItemCaseSensitive(json_context, action) != NULL) {
+                actions = cJSON_GetObjectItemCaseSensitive(json_context, action);
             }
         }
         
         // Digital outputs
-        cJSON *json_relays = cJSON_GetObjectItem(actions, DIGITAL_OUTPUTS_ARRAY);
+        cJSON *json_relays = cJSON_GetObjectItemCaseSensitive(actions, DIGITAL_OUTPUTS_ARRAY);
         for(uint8_t i=0; i<cJSON_GetArraySize(json_relays); i++) {
             cJSON *json_relay = cJSON_GetArrayItem(json_relays, i);
             
             if (!hkc_check_action_conditions(json_relay))
-               continue;
-
-            const uint8_t gpio = (uint8_t) cJSON_GetObjectItem(json_relay, PIN_GPIO)->valuedouble;
+                continue;
+            
+            const uint8_t gpio = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_relay, PIN_GPIO)->valuedouble;
             
             bool value = false;
-            if (cJSON_GetObjectItem(json_relay, VALUE) != NULL) {
-                value = (bool) cJSON_GetObjectItem(json_relay, VALUE)->valuedouble;
+            if (cJSON_GetObjectItemCaseSensitive(json_relay, VALUE) != NULL) {
+                value = (bool) cJSON_GetObjectItemCaseSensitive(json_relay, VALUE)->valuedouble;
             }
 
             gpio_write(gpio, value);
-            printf("HAA > Digital output GPIO %i -> %i\n", gpio, value);
+            INFO("Digital output GPIO %i -> %i", gpio, value);
             
-            if (cJSON_GetObjectItem(json_relay, AUTOSWITCH_TIME) != NULL) {
-                const double autoswitch_time = cJSON_GetObjectItem(json_relay, AUTOSWITCH_TIME)->valuedouble;
+            if (cJSON_GetObjectItemCaseSensitive(json_relay, AUTOSWITCH_TIME) != NULL) {
+                const double autoswitch_time = cJSON_GetObjectItemCaseSensitive(json_relay, AUTOSWITCH_TIME)->valuedouble;
                 if (autoswitch_time > 0) {
                     autoswitch_params_t *autoswitch_params = malloc(sizeof(autoswitch_params_t));
                     autoswitch_params->gpio = gpio;
@@ -1483,17 +1488,17 @@ void do_actions(cJSON *json_context, const uint8_t int_action) {
         }
         
         // Accessory Manager
-        cJSON *json_acc_managers = cJSON_GetObjectItem(actions, MANAGE_OTHERS_ACC_ARRAY);
+        cJSON *json_acc_managers = cJSON_GetObjectItemCaseSensitive(actions, MANAGE_OTHERS_ACC_ARRAY);
         for(uint8_t i=0; i<cJSON_GetArraySize(json_acc_managers); i++) {
             cJSON *json_acc_manager = cJSON_GetArrayItem(json_acc_managers, i);
             
-            const uint8_t accessory = (uint8_t) cJSON_GetObjectItem(json_acc_manager, ACCESSORY_INDEX)->valuedouble;
+            const uint8_t accessory = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_acc_manager, ACCESSORY_INDEX)->valuedouble;
             
             ch_group_t *ch_group = ch_group_find_by_acc(accessory);
             if (ch_group) {
                 float value = 0.0;
-                if (cJSON_GetObjectItem(json_acc_manager, VALUE) != NULL) {
-                    value = (float) cJSON_GetObjectItem(json_acc_manager, VALUE)->valuedouble;
+                if (cJSON_GetObjectItemCaseSensitive(json_acc_manager, VALUE) != NULL) {
+                    value = (float) cJSON_GetObjectItemCaseSensitive(json_acc_manager, VALUE)->valuedouble;
                 }
 
                 switch (ch_group->acc_type) {
@@ -1548,7 +1553,7 @@ void do_actions(cJSON *json_context, const uint8_t int_action) {
                         break;
                 }
                 
-                printf("HAA > Accessory Manager %i -> %.2f\n", accessory, value);
+                INFO("Accessory Manager %i -> %.2f", accessory, value);
             }
         }
     }
@@ -1559,21 +1564,21 @@ void do_actions(cJSON *json_context, const uint8_t int_action) {
 // --- IDENTIFY
 void identify(homekit_value_t _value) {
     led_blink(6);
-    printf("HAA > Identifying\n");
+    INFO("Identifying");
 }
 
 // ---------
 
 void delayed_sensor_starter_task(void *args) {
-    printf("HAA > Starting delayed sensor\n");
+    INFO("Starting delayed sensor");
     homekit_characteristic_t *ch = args;
     ch_group_t *ch_group = ch_group_find(ch);
     
     cJSON *json_context = ch->context;
     
     uint16_t th_poll_period = THERMOSTAT_DEFAULT_POLL_PERIOD;
-    if (cJSON_GetObjectItem(json_context, THERMOSTAT_POLL_PERIOD) != NULL) {
-        th_poll_period = (uint16_t) cJSON_GetObjectItem(json_context, THERMOSTAT_POLL_PERIOD)->valuedouble;
+    if (cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_POLL_PERIOD) != NULL) {
+        th_poll_period = (uint16_t) cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_POLL_PERIOD)->valuedouble;
     }
     
     if (th_poll_period < 3) {
@@ -1599,47 +1604,32 @@ homekit_server_config_t config;
 
 void run_homekit_server() {
     if (enable_homekit_server) {
-        printf("HAA > Starting HK Server\n");
+        INFO("Start HK Server");
+
         homekit_server_init(&config);
     }
     
     led_blink(6);
 }
 
+void printf_header() {
+    printf("\n\n\n");
+    INFO("Home Accessory Architect v%s", FIRMWARE_VERSION);
+    INFO("Developed by José Antonio Jiménez Campos (@RavenSystem)\n");
+}
+
 void normal_mode_init() {
-    // Arming emergency Setup Mode
-    sysparam_set_bool("setup", true);
-    xTaskCreate(exit_emergency_setup_mode_task, "exit_emergency_setup_mode_task", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-    
-    // Filling Used GPIO Array
-    for (uint8_t g=0; g<17; g++) {
-        used_gpio[g] = false;
-    }
-    
-    sdk_os_timer_setfn(&setup_mode_toggle_timer, setup_mode_toggle, NULL);
-    
-    uint8_t macaddr[6];
-    sdk_wifi_get_macaddr(STATION_IF, macaddr);
-    
-    char *name_value = malloc(11);
-    snprintf(name_value, 11, "HAA-%02X%02X%02X", macaddr[3], macaddr[4], macaddr[5]);
-    name.value = HOMEKIT_STRING(name_value);
-    
-    char *serial_value = malloc(13);
-    snprintf(serial_value, 13, "%02X%02X%02X%02X%02X%02X", macaddr[0], macaddr[1], macaddr[2], macaddr[3], macaddr[4], macaddr[5]);
-    serial.value = HOMEKIT_STRING(serial_value);
-    
     char *txt_config = NULL;
     sysparam_get_string("haa_conf", &txt_config);
     
-    cJSON *json_config = cJSON_GetObjectItem(cJSON_Parse(txt_config), GENERAL_CONFIG);
-    cJSON *json_accessories = cJSON_GetObjectItem(cJSON_Parse(txt_config), ACCESSORIES);
+    cJSON *json_config = cJSON_GetObjectItemCaseSensitive(cJSON_Parse(txt_config), GENERAL_CONFIG);
+    cJSON *json_accessories = cJSON_GetObjectItemCaseSensitive(cJSON_Parse(txt_config), ACCESSORIES);
     
     const uint8_t total_accessories = cJSON_GetArraySize(json_accessories);
     
     if (total_accessories == 0) {
         uart_set_baud(0, 115200);
-        printf("HAA ! ERROR: Invalid JSON\n");
+        ERROR("Invalid JSON");
         xTaskCreate(setup_mode_task, "setup_mode_task", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
         
         free(txt_config);
@@ -1647,29 +1637,27 @@ void normal_mode_init() {
         return;
     }
     
-    
-    
     // Buttons GPIO Setup function
     bool diginput_register(cJSON *json_buttons, void *callback, homekit_characteristic_t *hk_ch, const uint8_t param) {
         bool run_at_launch = false;
         
         for(uint8_t j=0; j<cJSON_GetArraySize(json_buttons); j++) {
-            const uint8_t gpio = (uint8_t) cJSON_GetObjectItem(cJSON_GetArrayItem(json_buttons, j), PIN_GPIO)->valuedouble;
+            const uint8_t gpio = (uint8_t) cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_buttons, j), PIN_GPIO)->valuedouble;
             bool pullup_resistor = true;
-            if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_buttons, j), PULLUP_RESISTOR) != NULL &&
-                cJSON_GetObjectItem(cJSON_GetArrayItem(json_buttons, j), PULLUP_RESISTOR)->valuedouble == 0) {
+            if (cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_buttons, j), PULLUP_RESISTOR) != NULL &&
+                cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_buttons, j), PULLUP_RESISTOR)->valuedouble == 0) {
                 pullup_resistor = false;
             }
             
             bool inverted = false;
-            if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_buttons, j), INVERTED) != NULL &&
-                cJSON_GetObjectItem(cJSON_GetArrayItem(json_buttons, j), INVERTED)->valuedouble == 1) {
+            if (cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_buttons, j), INVERTED) != NULL &&
+                cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_buttons, j), INVERTED)->valuedouble == 1) {
                 inverted = true;
             }
             
             uint8_t button_type = 1;
-            if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_buttons, j), BUTTON_PRESS_TYPE) != NULL) {
-                button_type = (uint8_t) cJSON_GetObjectItem(cJSON_GetArrayItem(json_buttons, j), BUTTON_PRESS_TYPE)->valuedouble;
+            if (cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_buttons, j), BUTTON_PRESS_TYPE) != NULL) {
+                button_type = (uint8_t) cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_buttons, j), BUTTON_PRESS_TYPE)->valuedouble;
             }
             
             if (!used_gpio[gpio]) {
@@ -1678,7 +1666,7 @@ void normal_mode_init() {
             }
             adv_button_register_callback_fn(gpio, callback, button_type, (void*) hk_ch, param);
             
-            printf("HAA > Enable button GPIO %i, type=%i, inverted=%i\n", gpio, button_type, inverted);
+            INFO("Digital input GPIO: %i, type: %i, inv: %i", gpio, button_type, inverted);
              
             if (gpio_read(gpio) == button_type) {
                 run_at_launch = true;
@@ -1691,9 +1679,9 @@ void normal_mode_init() {
     // Initial state function
     float set_initial_state(const uint8_t accessory, const uint8_t ch_number, cJSON *json_context, homekit_characteristic_t *ch, const uint8_t ch_type, const float default_value) {
         float state = default_value;
-        printf("HAA > Setting initial state\n");
-        if (cJSON_GetObjectItem(json_context, INITIAL_STATE) != NULL) {
-            const uint8_t initial_state = (uint8_t) cJSON_GetObjectItem(json_context, INITIAL_STATE)->valuedouble;
+        INFO("Setting initial state");
+        if (cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE) != NULL) {
+            const uint8_t initial_state = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE)->valuedouble;
             if (initial_state < INIT_STATE_LAST) {
                     state = initial_state;
             } else {
@@ -1754,10 +1742,10 @@ void normal_mode_init() {
                 }
                 
                 if (status != SYSPARAM_OK) {
-                    printf("HAA ! No previous state found\n");
+                    ERROR("No previous state found");
                 }
                 
-                printf("HAA > Init state = %.2f\n", state);
+                INFO("Init state = %.2f", state);
                 
             }
         }
@@ -1768,66 +1756,74 @@ void normal_mode_init() {
     // ----- CONFIG SECTION
     
     // Log output type
-    if (cJSON_GetObjectItem(json_config, LOG_OUTPUT) != NULL &&
-        cJSON_GetObjectItem(json_config, LOG_OUTPUT)->valuedouble == 1) {
+    if (cJSON_GetObjectItemCaseSensitive(json_config, LOG_OUTPUT) != NULL &&
+        cJSON_GetObjectItemCaseSensitive(json_config, LOG_OUTPUT)->valuedouble == 1) {
         uart_set_baud(0, 115200);
-        printf("\n\nHAA > Home Accessory Architect\nHAA > Developed by José Antonio Jiménez Campos (@RavenSystem)\nHAA > Version: %s\n\n", FIRMWARE_VERSION);
-        printf("HAA > Running in NORMAL mode...\n\n");
-        printf("HAA > JSON: %s\n\n", txt_config);
-        printf("HAA > -- PROCESSING JSON --\n");
-        printf("HAA > Enable UART log output\n");
+        printf_header();
+        INFO("NORMAL MODE");
+        INFO("JSON: %s", txt_config);
+        INFO("-- PROCESSING JSON --");
     }
 
     free(txt_config);
     
+    // Custom Hostname
+    char *custom_hostname = name.value.string_value;
+    if (cJSON_GetObjectItemCaseSensitive(json_config, CUSTOM_HOSTNAME) != NULL) {
+        uint8_t custom_hostname_len = strlen(cJSON_GetObjectItemCaseSensitive(json_config, CUSTOM_HOSTNAME)->valuestring) + 1;
+        custom_hostname = malloc(custom_hostname_len);
+        snprintf(custom_hostname, custom_hostname_len, "%s", cJSON_GetObjectItemCaseSensitive(json_config, CUSTOM_HOSTNAME)->valuestring);
+        INFO("Hostname: %s", custom_hostname);
+    }
+    
     // Status LED
-    if (cJSON_GetObjectItem(json_config, STATUS_LED_GPIO) != NULL) {
-        led_gpio = (uint8_t) cJSON_GetObjectItem(json_config, STATUS_LED_GPIO)->valuedouble;
+    if (cJSON_GetObjectItemCaseSensitive(json_config, STATUS_LED_GPIO) != NULL) {
+        led_gpio = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_config, STATUS_LED_GPIO)->valuedouble;
 
-        if (cJSON_GetObjectItem(json_config, INVERTED) != NULL) {
-                led_inverted = (bool) cJSON_GetObjectItem(json_config, INVERTED)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_config, INVERTED) != NULL) {
+                led_inverted = (bool) cJSON_GetObjectItemCaseSensitive(json_config, INVERTED)->valuedouble;
         }
         
         gpio_enable(led_gpio, GPIO_OUTPUT);
         used_gpio[led_gpio] = true;
         gpio_write(led_gpio, false ^ led_inverted);
-        printf("HAA > Enable LED GPIO %i, inverted=%i\n", led_gpio, led_inverted);
+        INFO("Status LED GPIO: %i, inv: %i", led_gpio, led_inverted);
     }
     
     // Button filter
-    if (cJSON_GetObjectItem(json_config, BUTTON_FILTER) != NULL) {
-        uint8_t button_filter_value = (uint8_t) cJSON_GetObjectItem(json_config, BUTTON_FILTER)->valuedouble;
+    if (cJSON_GetObjectItemCaseSensitive(json_config, BUTTON_FILTER) != NULL) {
+        uint8_t button_filter_value = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_config, BUTTON_FILTER)->valuedouble;
         adv_button_set_evaluate_delay(button_filter_value);
-        printf("HAA > Button filter set to %i\n", button_filter_value);
+        INFO("Button filter: %i", button_filter_value);
     }
     
     // PWM Frequency
-    if (cJSON_GetObjectItem(json_config, PWM_FREQ) != NULL) {
-        pwm_freq = (uint16_t) cJSON_GetObjectItem(json_config, PWM_FREQ)->valuedouble;
-        printf("HAA > PWM Frequency set to %i\n", pwm_freq);
+    if (cJSON_GetObjectItemCaseSensitive(json_config, PWM_FREQ) != NULL) {
+        pwm_freq = (uint16_t) cJSON_GetObjectItemCaseSensitive(json_config, PWM_FREQ)->valuedouble;
+        INFO("PWM Frequency: %i", pwm_freq);
     }
     
     // Allowed Setup Mode Time
-    if (cJSON_GetObjectItem(json_config, ALLOWED_SETUP_MODE_TIME) != NULL) {
-        setup_mode_time = (uint16_t) cJSON_GetObjectItem(json_config, ALLOWED_SETUP_MODE_TIME)->valuedouble;
-        printf("HAA > Setup mode time set to %i secs\n", setup_mode_time);
+    if (cJSON_GetObjectItemCaseSensitive(json_config, ALLOWED_SETUP_MODE_TIME) != NULL) {
+        setup_mode_time = (uint16_t) cJSON_GetObjectItemCaseSensitive(json_config, ALLOWED_SETUP_MODE_TIME)->valuedouble;
+        INFO("Setup mode time: %i secs", setup_mode_time);
     }
     
     // Run HomeKit Server
-    if (cJSON_GetObjectItem(json_config, ENABLE_HOMEKIT_SERVER) != NULL) {
-        enable_homekit_server = (bool) cJSON_GetObjectItem(json_config, ENABLE_HOMEKIT_SERVER)->valuedouble;
-        printf("HAA > Run HomeKit Server set to %i\n", enable_homekit_server);
+    if (cJSON_GetObjectItemCaseSensitive(json_config, ENABLE_HOMEKIT_SERVER) != NULL) {
+        enable_homekit_server = (bool) cJSON_GetObjectItemCaseSensitive(json_config, ENABLE_HOMEKIT_SERVER)->valuedouble;
+        INFO("Run HomeKit Server: %i", enable_homekit_server);
     }
     
     // Allow unsecure connections
-    if (cJSON_GetObjectItem(json_config, ALLOW_INSECURE_CONNECTIONS) != NULL) {
-        bool allow_insecure = (bool) cJSON_GetObjectItem(json_config, ALLOW_INSECURE_CONNECTIONS)->valuedouble;
+    if (cJSON_GetObjectItemCaseSensitive(json_config, ALLOW_INSECURE_CONNECTIONS) != NULL) {
+        bool allow_insecure = (bool) cJSON_GetObjectItemCaseSensitive(json_config, ALLOW_INSECURE_CONNECTIONS)->valuedouble;
         config.insecure = allow_insecure;
-        printf("HAA > Allow unsecure connections set to %i\n", allow_insecure);
+        INFO("Unsecure connections: %i", allow_insecure);
     }
     
     // Buttons to enter setup mode
-    diginput_register(cJSON_GetObjectItem(json_config, BUTTONS_ARRAY), setup_mode_call, NULL, 0);
+    diginput_register(cJSON_GetObjectItemCaseSensitive(json_config, BUTTONS_ARRAY), setup_mode_call, NULL, 0);
     
     // ----- END CONFIG SECTION
     
@@ -1836,8 +1832,8 @@ void normal_mode_init() {
 
     for(uint8_t i=0; i<total_accessories; i++) {
         // Kill Switch Accessory count
-        if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_accessories, i), KILL_SWITCH) != NULL) {
-        const uint8_t kill_switch = (uint8_t) cJSON_GetObjectItem(cJSON_GetArrayItem(json_accessories, i), KILL_SWITCH)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_accessories, i), KILL_SWITCH) != NULL) {
+        const uint8_t kill_switch = (uint8_t) cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_accessories, i), KILL_SWITCH)->valuedouble;
             switch (kill_switch) {
                 case 1:
                 case 2:
@@ -1855,8 +1851,8 @@ void normal_mode_init() {
         
         // Accessory Type Accessory count
         uint8_t acc_type = ACC_TYPE_SWITCH;     // Default accessory type
-        if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_accessories, i), ACCESSORY_TYPE) != NULL) {
-            acc_type = (uint8_t) cJSON_GetObjectItem(cJSON_GetArrayItem(json_accessories, i), ACCESSORY_TYPE)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_accessories, i), ACCESSORY_TYPE) != NULL) {
+            acc_type = (uint8_t) cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_accessories, i), ACCESSORY_TYPE)->valuedouble;
         }
 
         switch (acc_type) {
@@ -1915,23 +1911,23 @@ void normal_mode_init() {
     }
     
     uint8_t build_kill_switches(const uint8_t accessory, ch_group_t *ch_group, cJSON *json_context) {
-        if (cJSON_GetObjectItem(json_context, KILL_SWITCH) != NULL) {
-            const uint8_t kill_switch = (uint8_t) cJSON_GetObjectItem(json_context, KILL_SWITCH)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, KILL_SWITCH) != NULL) {
+            const uint8_t kill_switch = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, KILL_SWITCH)->valuedouble;
             
             if (kill_switch == 1) {
-                printf("HAA > Enable Secure Switch\n");
+                INFO("Secure Switch");
                 ch_group->ch_sec = new_kill_switch(accessory);
                 return accessory + 1;
                 
             } else if (kill_switch == 2) {
-                printf("HAA > Enable Kids Switch\n");
+                INFO("Kids Switch");
                 ch_group->ch_child = new_kill_switch(accessory);
                 return accessory + 1;
                 
             } else if (kill_switch == 3) {
-                printf("HAA > Enable Secure Switch\n");
+                INFO("Secure Switch");
                 ch_group->ch_sec = new_kill_switch(accessory);
-                printf("HAA > Enable Kids Switch\n");
+                INFO("Kids Switch");
                 ch_group->ch_child = new_kill_switch(accessory + 1);
                 return accessory + 2;
             }
@@ -1946,8 +1942,8 @@ void normal_mode_init() {
         homekit_characteristic_t *ch0 = NEW_HOMEKIT_CHARACTERISTIC(ON, false, .getter_ex=hkc_getter, .setter_ex=hkc_on_setter, .context=json_context);
         
         uint32_t max_duration = 0;
-        if (cJSON_GetObjectItem(json_context, VALVE_MAX_DURATION) != NULL) {
-            max_duration = (uint32_t) cJSON_GetObjectItem(json_context, VALVE_MAX_DURATION)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, VALVE_MAX_DURATION) != NULL) {
+            max_duration = (uint32_t) cJSON_GetObjectItemCaseSensitive(json_context, VALVE_MAX_DURATION)->valuedouble;
         }
         
         homekit_characteristic_t *ch1, *ch2;
@@ -2007,24 +2003,24 @@ void normal_mode_init() {
         
         accessories[accessory]->services[1]->characteristics[0] = ch0;
         
-        diginput_register(cJSON_GetObjectItem(json_context, BUTTONS_ARRAY), diginput, ch0, TYPE_ON);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, BUTTONS_ARRAY), diginput, ch0, TYPE_ON);
         
         uint8_t initial_state = 0;
-        if (cJSON_GetObjectItem(json_context, INITIAL_STATE) != NULL) {
-            initial_state = (uint8_t) cJSON_GetObjectItem(json_context, INITIAL_STATE)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE) != NULL) {
+            initial_state = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE)->valuedouble;
         }
         
         if (initial_state != INIT_STATE_FIXED_INPUT) {
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_ON);
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_ON);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_ON);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_ON);
             
             ch0->value.bool_value = !((bool) set_initial_state(accessory, 0, json_context, ch0, CH_TYPE_BOOL, 0));
             hkc_on_setter(ch0, HOMEKIT_BOOL(!ch0->value.bool_value));
         } else {
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_ON)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_ON)) {
                 diginput_1(0, ch0, TYPE_ON);
             }
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_ON)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_ON)) {
                 ch0->value = HOMEKIT_BOOL(true);
                 diginput_0(0, ch0, TYPE_ON);
             }
@@ -2055,9 +2051,9 @@ void normal_mode_init() {
         accessories[accessory]->services[1]->characteristics = calloc(2, sizeof(homekit_characteristic_t*));
         accessories[accessory]->services[1]->characteristics[0] = ch0;
         
-        diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), button_event, ch0, SINGLEPRESS_EVENT);
-        diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), button_event, ch0, DOUBLEPRESS_EVENT);
-        diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_2), button_event, ch0, LONGPRESS_EVENT);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), button_event, ch0, SINGLEPRESS_EVENT);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), button_event, ch0, DOUBLEPRESS_EVENT);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_2), button_event, ch0, LONGPRESS_EVENT);
         
         const uint8_t new_accessory_count = build_kill_switches(accessory + 1, ch_group, json_context);
         return new_accessory_count;
@@ -2087,24 +2083,24 @@ void normal_mode_init() {
         accessories[accessory]->services[1]->characteristics[0] = ch0;
         accessories[accessory]->services[1]->characteristics[1] = ch1;
         
-        diginput_register(cJSON_GetObjectItem(json_context, BUTTONS_ARRAY), diginput, ch1, TYPE_LOCK);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, BUTTONS_ARRAY), diginput, ch1, TYPE_LOCK);
         
         uint8_t initial_state = 0;
-        if (cJSON_GetObjectItem(json_context, INITIAL_STATE) != NULL) {
-            initial_state = (uint8_t) cJSON_GetObjectItem(json_context, INITIAL_STATE)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE) != NULL) {
+            initial_state = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE)->valuedouble;
         }
         
         if (initial_state != INIT_STATE_FIXED_INPUT) {
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch1, TYPE_LOCK);
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch1, TYPE_LOCK);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch1, TYPE_LOCK);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch1, TYPE_LOCK);
             
             ch1->value.int_value = !((uint8_t) set_initial_state(accessory, 0, json_context, ch1, CH_TYPE_INT8, 1));
             hkc_lock_setter(ch1, HOMEKIT_UINT8(!ch1->value.int_value));
         } else {
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch1, TYPE_LOCK)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch1, TYPE_LOCK)) {
                 diginput_1(0, ch1, TYPE_LOCK);
             }
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch1, TYPE_LOCK)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch1, TYPE_LOCK)) {
                 ch1->value = HOMEKIT_UINT8(0);
                 diginput_0(0, ch1, TYPE_LOCK);
             }
@@ -2179,19 +2175,19 @@ void normal_mode_init() {
         
         if (acc_type == ACC_TYPE_MOTION_SENSOR) {
             ch_group->acc_type = ACC_TYPE_MOTION_SENSOR;
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), sensor_0, ch0, TYPE_SENSOR_BOOL)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), sensor_0, ch0, TYPE_SENSOR_BOOL)) {
                 sensor_0(0, ch0, TYPE_SENSOR_BOOL);
             }
             
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), sensor_1, ch0, TYPE_SENSOR_BOOL)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), sensor_1, ch0, TYPE_SENSOR_BOOL)) {
                 sensor_1(0, ch0, TYPE_SENSOR_BOOL);
             }
         } else {
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), sensor_0, ch0, TYPE_SENSOR)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), sensor_0, ch0, TYPE_SENSOR)) {
                 sensor_0(0, ch0, TYPE_SENSOR);
             }
             
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), sensor_1, ch0, TYPE_SENSOR)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), sensor_1, ch0, TYPE_SENSOR)) {
                 sensor_1(0, ch0, TYPE_SENSOR);
             }
         }
@@ -2203,13 +2199,13 @@ void normal_mode_init() {
         new_accessory(accessory, 3);
         
         uint8_t valve_type = 0;
-        if (cJSON_GetObjectItem(json_context, VALVE_SYSTEM_TYPE) != NULL) {
-            valve_type = (uint8_t) cJSON_GetObjectItem(json_context, VALVE_SYSTEM_TYPE)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, VALVE_SYSTEM_TYPE) != NULL) {
+            valve_type = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, VALVE_SYSTEM_TYPE)->valuedouble;
         }
         
         uint32_t valve_max_duration = VALVE_DEFAULT_MAX_DURATION;
-        if (cJSON_GetObjectItem(json_context, VALVE_MAX_DURATION) != NULL) {
-            valve_max_duration = (uint32_t) cJSON_GetObjectItem(json_context, VALVE_MAX_DURATION)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, VALVE_MAX_DURATION) != NULL) {
+            valve_max_duration = (uint32_t) cJSON_GetObjectItemCaseSensitive(json_context, VALVE_MAX_DURATION)->valuedouble;
         }
         
         homekit_characteristic_t *ch0 = NEW_HOMEKIT_CHARACTERISTIC(ACTIVE, 0, .getter_ex=hkc_getter, .setter_ex=hkc_valve_setter, .context=json_context);
@@ -2260,24 +2256,24 @@ void normal_mode_init() {
         accessories[accessory]->services[1]->characteristics[1] = ch1;
         accessories[accessory]->services[1]->characteristics[2] = NEW_HOMEKIT_CHARACTERISTIC(VALVE_TYPE, valve_type, .getter_ex=hkc_getter);
         
-        diginput_register(cJSON_GetObjectItem(json_context, BUTTONS_ARRAY), diginput, ch0, TYPE_VALVE);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, BUTTONS_ARRAY), diginput, ch0, TYPE_VALVE);
         
         uint8_t initial_state = 0;
-        if (cJSON_GetObjectItem(json_context, INITIAL_STATE) != NULL) {
-            initial_state = (uint8_t) cJSON_GetObjectItem(json_context, INITIAL_STATE)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE) != NULL) {
+            initial_state = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE)->valuedouble;
         }
         
         if (initial_state != INIT_STATE_FIXED_INPUT) {
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_VALVE);
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_VALVE);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_VALVE);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_VALVE);
             
             ch0->value.int_value = !((uint8_t) set_initial_state(accessory, 0, json_context, ch0, CH_TYPE_INT8, 0));
             hkc_valve_setter(ch0, HOMEKIT_UINT8(!ch0->value.int_value));
         } else {
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_VALVE)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_VALVE)) {
                 diginput_1(0, ch0, TYPE_VALVE);
             }
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_VALVE)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_VALVE)) {
                 ch0->value = HOMEKIT_UINT8(1);
                 diginput_0(0, ch0, TYPE_VALVE);
             }
@@ -2292,8 +2288,8 @@ void normal_mode_init() {
         
         // Custom ranges of Target Temperatures
         float th_min_temp = THERMOSTAT_DEFAULT_MIN_TEMP;
-        if (cJSON_GetObjectItem(json_context, THERMOSTAT_MIN_TEMP) != NULL) {
-            th_min_temp = (float) cJSON_GetObjectItem(json_context, THERMOSTAT_MIN_TEMP)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_MIN_TEMP) != NULL) {
+            th_min_temp = (float) cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_MIN_TEMP)->valuedouble;
         }
         
         if (th_min_temp < -100) {
@@ -2301,8 +2297,8 @@ void normal_mode_init() {
         }
         
         float th_max_temp = THERMOSTAT_DEFAULT_MAX_TEMP;
-        if (cJSON_GetObjectItem(json_context, THERMOSTAT_MAX_TEMP) != NULL) {
-            th_max_temp = (float) cJSON_GetObjectItem(json_context, THERMOSTAT_MAX_TEMP)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_MAX_TEMP) != NULL) {
+            th_max_temp = (float) cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_MAX_TEMP)->valuedouble;
         }
         
         if (th_max_temp > 200) {
@@ -2313,8 +2309,8 @@ void normal_mode_init() {
         
         // Sensor poll period
         uint16_t th_poll_period = THERMOSTAT_DEFAULT_POLL_PERIOD;
-        if (cJSON_GetObjectItem(json_context, THERMOSTAT_POLL_PERIOD) != NULL) {
-            th_poll_period = (uint16_t) cJSON_GetObjectItem(json_context, THERMOSTAT_POLL_PERIOD)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_POLL_PERIOD) != NULL) {
+            th_poll_period = (uint16_t) cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_POLL_PERIOD)->valuedouble;
         }
         
         if (th_poll_period < 3) {
@@ -2323,8 +2319,8 @@ void normal_mode_init() {
         
         // Thermostat Type
         uint8_t th_type = THERMOSTAT_TYPE_HEATER;
-        if (cJSON_GetObjectItem(json_context, THERMOSTAT_TYPE) != NULL) {
-            th_type = (uint8_t) cJSON_GetObjectItem(json_context, THERMOSTAT_TYPE)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_TYPE) != NULL) {
+            th_type = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_TYPE)->valuedouble;
         }
         
         // HomeKit Characteristics
@@ -2409,34 +2405,34 @@ void normal_mode_init() {
         
         xTaskCreate(delayed_sensor_starter_task, "delayed_sensor_starter_task", configMINIMAL_STACK_SIZE, ch0, 1, NULL);
         
-        diginput_register(cJSON_GetObjectItem(json_context, BUTTONS_ARRAY), th_input, ch1, 9);
-        diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_3), th_input_temp, ch0, THERMOSTAT_TEMP_UP);
-        diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_4), th_input_temp, ch0, THERMOSTAT_TEMP_DOWN);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, BUTTONS_ARRAY), th_input, ch1, 9);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_3), th_input_temp, ch0, THERMOSTAT_TEMP_UP);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_4), th_input_temp, ch0, THERMOSTAT_TEMP_DOWN);
         
         if (th_type == THERMOSTAT_TYPE_HEATERCOOLER) {
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_5), th_input, ch0, 5);
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_6), th_input, ch0, 6);
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_7), th_input, ch0, 7);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_5), th_input, ch0, 5);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_6), th_input, ch0, 6);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_7), th_input, ch0, 7);
             
             ch4->value.int_value = set_initial_state(accessory, 4, cJSON_Parse(INIT_STATE_LAST_STR), ch4, CH_TYPE_INT8, 0);
         }
         
         uint8_t initial_state = 0;
-        if (cJSON_GetObjectItem(json_context, INITIAL_STATE) != NULL) {
-            initial_state = (uint8_t) cJSON_GetObjectItem(json_context, INITIAL_STATE)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE) != NULL) {
+            initial_state = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE)->valuedouble;
         }
         
         if (initial_state != INIT_STATE_FIXED_INPUT) {
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), th_input, ch0, 1);
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), th_input, ch0, 0);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), th_input, ch0, 1);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), th_input, ch0, 0);
             
             ch1->value.bool_value = !((bool) set_initial_state(accessory, 1, json_context, ch1, CH_TYPE_BOOL, false));
             update_th(ch1, HOMEKIT_BOOL(!ch1->value.bool_value));
         } else {
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), th_input, ch0, 1)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), th_input, ch0, 1)) {
                 th_input(0, ch1, 1);
             }
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), th_input, ch0, 0)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), th_input, ch0, 0)) {
                 ch1->value = HOMEKIT_BOOL(true);
                 th_input(0, ch1, 0);
             }
@@ -2450,8 +2446,8 @@ void normal_mode_init() {
         new_accessory(accessory, 3);
         
         uint16_t th_poll_period = THERMOSTAT_DEFAULT_POLL_PERIOD;
-        if (cJSON_GetObjectItem(json_context, THERMOSTAT_POLL_PERIOD) != NULL) {
-            th_poll_period = (uint16_t) cJSON_GetObjectItem(json_context, THERMOSTAT_POLL_PERIOD)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_POLL_PERIOD) != NULL) {
+            th_poll_period = (uint16_t) cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_POLL_PERIOD)->valuedouble;
         }
         
         if (th_poll_period < 3) {
@@ -2517,8 +2513,8 @@ void normal_mode_init() {
         new_accessory(accessory, 4);
         
         uint16_t th_poll_period = THERMOSTAT_DEFAULT_POLL_PERIOD;
-        if (cJSON_GetObjectItem(json_context, THERMOSTAT_POLL_PERIOD) != NULL) {
-            th_poll_period = (uint16_t) cJSON_GetObjectItem(json_context, THERMOSTAT_POLL_PERIOD)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_POLL_PERIOD) != NULL) {
+            th_poll_period = (uint16_t) cJSON_GetObjectItemCaseSensitive(json_context, THERMOSTAT_POLL_PERIOD)->valuedouble;
         }
         
         if (th_poll_period < 3) {
@@ -2564,7 +2560,7 @@ void normal_mode_init() {
         new_accessory(accessory, 3);
         
         if (!lightbulb_groups) {
-            printf("HAA > PWM Init\n");
+            INFO("PWM Init");
             pwm_timer = malloc(sizeof(ETSTimer));
             memset(pwm_timer, 0, sizeof(*pwm_timer));
             sdk_os_timer_setfn(pwm_timer, rgbw_set_timer_worker, NULL);
@@ -2615,56 +2611,56 @@ void normal_mode_init() {
         lightbulb_group->next = lightbulb_groups;
         lightbulb_groups = lightbulb_group;
 
-        if (cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_R) != NULL && pwm_info->channels < MULTIPWM_MAX_CHANNELS) {
+        if (cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_PWM_GPIO_R) != NULL && pwm_info->channels < MULTIPWM_MAX_CHANNELS) {
             lightbulb_group->pwm_r = pwm_info->channels;
             pwm_info->channels++;
-            multipwm_set_pin(pwm_info, lightbulb_group->pwm_r, (uint8_t) cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_R)->valuedouble);
+            multipwm_set_pin(pwm_info, lightbulb_group->pwm_r, (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_PWM_GPIO_R)->valuedouble);
         }
         
-        if (cJSON_GetObjectItem(json_context, LIGHTBULB_FACTOR_R) != NULL) {
-            lightbulb_group->factor_r = (float) cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_R)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_FACTOR_R) != NULL) {
+            lightbulb_group->factor_r = (float) cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_FACTOR_R)->valuedouble;
         }
 
-        if (cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_G) != NULL && pwm_info->channels < MULTIPWM_MAX_CHANNELS) {
+        if (cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_PWM_GPIO_G) != NULL && pwm_info->channels < MULTIPWM_MAX_CHANNELS) {
             lightbulb_group->pwm_g = pwm_info->channels;
             pwm_info->channels++;
-            multipwm_set_pin(pwm_info, lightbulb_group->pwm_g, (uint8_t) cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_G)->valuedouble);
+            multipwm_set_pin(pwm_info, lightbulb_group->pwm_g, (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_PWM_GPIO_G)->valuedouble);
         }
         
-        if (cJSON_GetObjectItem(json_context, LIGHTBULB_FACTOR_G) != NULL) {
-            lightbulb_group->factor_g = (float) cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_G)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_FACTOR_G) != NULL) {
+            lightbulb_group->factor_g = (float) cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_FACTOR_G)->valuedouble;
         }
 
-        if (cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_B) != NULL && pwm_info->channels < MULTIPWM_MAX_CHANNELS) {
+        if (cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_PWM_GPIO_B) != NULL && pwm_info->channels < MULTIPWM_MAX_CHANNELS) {
             lightbulb_group->pwm_b = pwm_info->channels;
             pwm_info->channels++;
-            multipwm_set_pin(pwm_info, lightbulb_group->pwm_b, (uint8_t) cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_B)->valuedouble);
+            multipwm_set_pin(pwm_info, lightbulb_group->pwm_b, (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_PWM_GPIO_B)->valuedouble);
         }
         
-        if (cJSON_GetObjectItem(json_context, LIGHTBULB_FACTOR_B) != NULL) {
-            lightbulb_group->factor_b = (float) cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_B)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_FACTOR_B) != NULL) {
+            lightbulb_group->factor_b = (float) cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_FACTOR_B)->valuedouble;
         }
 
-        if (cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_W) != NULL && pwm_info->channels < MULTIPWM_MAX_CHANNELS) {
+        if (cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_PWM_GPIO_W) != NULL && pwm_info->channels < MULTIPWM_MAX_CHANNELS) {
             lightbulb_group->pwm_w = pwm_info->channels;
             pwm_info->channels++;
-            multipwm_set_pin(pwm_info, lightbulb_group->pwm_w, (uint8_t) cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_W)->valuedouble);
+            multipwm_set_pin(pwm_info, lightbulb_group->pwm_w, (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_PWM_GPIO_W)->valuedouble);
         }
         
-        if (cJSON_GetObjectItem(json_context, LIGHTBULB_FACTOR_W) != NULL) {
-            lightbulb_group->factor_w = (float) cJSON_GetObjectItem(json_context, LIGHTBULB_PWM_GPIO_W)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_FACTOR_W) != NULL) {
+            lightbulb_group->factor_w = (float) cJSON_GetObjectItemCaseSensitive(json_context, LIGHTBULB_FACTOR_W)->valuedouble;
         }
         
-        if (cJSON_GetObjectItem(json_context, RGBW_STEP) != NULL) {
-            lightbulb_group->step = (uint16_t) cJSON_GetObjectItem(json_context, RGBW_STEP)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, RGBW_STEP) != NULL) {
+            lightbulb_group->step = (uint16_t) cJSON_GetObjectItemCaseSensitive(json_context, RGBW_STEP)->valuedouble;
         }
         
-        if (cJSON_GetObjectItem(json_context, AUTODIMMER_TASK_DELAY) != NULL) {
-            lightbulb_group->autodimmer_task_delay = cJSON_GetObjectItem(json_context, AUTODIMMER_TASK_DELAY)->valuedouble * (1000 / portTICK_PERIOD_MS);
+        if (cJSON_GetObjectItemCaseSensitive(json_context, AUTODIMMER_TASK_DELAY) != NULL) {
+            lightbulb_group->autodimmer_task_delay = cJSON_GetObjectItemCaseSensitive(json_context, AUTODIMMER_TASK_DELAY)->valuedouble * (1000 / portTICK_PERIOD_MS);
         }
         
-        if (cJSON_GetObjectItem(json_context, AUTODIMMER_TASK_STEP) != NULL) {
-            lightbulb_group->autodimmer_task_step = (uint8_t) cJSON_GetObjectItem(json_context, AUTODIMMER_TASK_STEP)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, AUTODIMMER_TASK_STEP) != NULL) {
+            lightbulb_group->autodimmer_task_step = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, AUTODIMMER_TASK_STEP)->valuedouble;
         }
 
         accessories[accessory]->services[1] = calloc(1, sizeof(homekit_service_t));
@@ -2710,25 +2706,25 @@ void normal_mode_init() {
         memset(ch_group->timer, 0, sizeof(*ch_group->timer));
         sdk_os_timer_setfn(ch_group->timer, hkc_rgbw_setter_delayed, ch0);
 
-        diginput_register(cJSON_GetObjectItem(json_context, BUTTONS_ARRAY), diginput, ch0, TYPE_LIGHTBULB);
-        diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_2), rgbw_brightness, ch1, LIGHTBULB_BRIGHTNESS_UP);
-        diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_3), rgbw_brightness, ch1, LIGHTBULB_BRIGHTNESS_DOWN);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, BUTTONS_ARRAY), diginput, ch0, TYPE_LIGHTBULB);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_2), rgbw_brightness, ch1, LIGHTBULB_BRIGHTNESS_UP);
+        diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_3), rgbw_brightness, ch1, LIGHTBULB_BRIGHTNESS_DOWN);
         
         uint8_t initial_state = 0;
-        if (cJSON_GetObjectItem(json_context, INITIAL_STATE) != NULL) {
-            initial_state = (uint8_t) cJSON_GetObjectItem(json_context, INITIAL_STATE)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE) != NULL) {
+            initial_state = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_context, INITIAL_STATE)->valuedouble;
         }
         
         if (initial_state != INIT_STATE_FIXED_INPUT) {
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_LIGHTBULB);
-            diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_LIGHTBULB);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_LIGHTBULB);
+            diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_LIGHTBULB);
             
             ch0->value = HOMEKIT_BOOL((bool) set_initial_state(accessory, 0, json_context, ch0, CH_TYPE_BOOL, 0));
         } else {
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_LIGHTBULB)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_1), diginput_1, ch0, TYPE_LIGHTBULB)) {
                 ch0->value = HOMEKIT_BOOL(true);
             }
-            if (diginput_register(cJSON_GetObjectItem(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_LIGHTBULB)) {
+            if (diginput_register(cJSON_GetObjectItemCaseSensitive(json_context, FIXED_BUTTONS_ARRAY_0), diginput_0, ch0, TYPE_LIGHTBULB)) {
                 ch0->value = HOMEKIT_BOOL(false);
             }
         }
@@ -2743,17 +2739,18 @@ void normal_mode_init() {
     
     // Accessory Builder
     if (bridge_needed) {
-        printf("HAA >\nHAA > BRIDGE CREATED\n");
+        INFO("BRIDGE CREATED");
         new_accessory(0, 2);
         acc_count++;
     }
     
     for(uint8_t i=0; i<total_accessories; i++) {
-        printf("HAA >\nHAA > ACCESSORY %i\n", accessory_numerator);
+        INFO("");
+        INFO("ACCESSORY %i", accessory_numerator);
         
         uint8_t acc_type = ACC_TYPE_SWITCH;
-        if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_accessories, i), ACCESSORY_TYPE) != NULL) {
-            acc_type = (uint8_t) cJSON_GetObjectItem(cJSON_GetArrayItem(json_accessories, i), ACCESSORY_TYPE)->valuedouble;
+        if (cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_accessories, i), ACCESSORY_TYPE) != NULL) {
+            acc_type = (uint8_t) cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_accessories, i), ACCESSORY_TYPE)->valuedouble;
         }
         
         cJSON *json_accessory = cJSON_GetArrayItem(json_accessories, i);
@@ -2763,17 +2760,17 @@ void normal_mode_init() {
             char *action = malloc(2);
             itoa(int_action, action, 10);
             
-            if (cJSON_GetObjectItem(json_accessory, action) != NULL) {
-                if (cJSON_GetObjectItem(cJSON_GetObjectItem(json_accessory, action), DIGITAL_OUTPUTS_ARRAY) != NULL) {
-                    cJSON *json_relays = cJSON_GetObjectItem(cJSON_GetObjectItem(json_accessory, action), DIGITAL_OUTPUTS_ARRAY);
+            if (cJSON_GetObjectItemCaseSensitive(json_accessory, action) != NULL) {
+                if (cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(json_accessory, action), DIGITAL_OUTPUTS_ARRAY) != NULL) {
+                    cJSON *json_relays = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(json_accessory, action), DIGITAL_OUTPUTS_ARRAY);
                     free(action);
                     
                     for(uint8_t j=0; j<cJSON_GetArraySize(json_relays); j++) {
-                        const uint8_t gpio = (uint8_t) cJSON_GetObjectItem(cJSON_GetArrayItem(json_relays, j), PIN_GPIO)->valuedouble;
+                        const uint8_t gpio = (uint8_t) cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_relays, j), PIN_GPIO)->valuedouble;
                         if (!used_gpio[gpio]) {
                             gpio_enable(gpio, GPIO_OUTPUT);
                             used_gpio[gpio] = true;
-                            printf("HAA > Enable digital output GPIO %i\n", gpio);
+                            INFO("Digital output GPIO: %i", gpio);
                         }
                     }
                 }
@@ -2781,7 +2778,7 @@ void normal_mode_init() {
         }
         
         // Creating HomeKit Accessory
-        printf("HAA > Accessory type = %i\n", acc_type);
+        INFO("Type: %i", acc_type);
         if (acc_type == ACC_TYPE_BUTTON) {
             acc_count = new_button_event(acc_count, json_accessory);
             
@@ -2837,26 +2834,48 @@ void normal_mode_init() {
     config.category = homekit_accessory_category_other;
     config.config_number = FIRMWARE_VERSION_OCTAL;
     
-    printf("HAA >\n");
+    INFO("");
     FREEHEAP();
-    printf("HAA > ---------------------\n\n");
+    INFO("---------------------\n");
     
-    wifi_config_init("HAA", NULL, run_homekit_server);
+    wifi_config_init("HAA", NULL, run_homekit_server, custom_hostname);
 }
 
 void user_init(void) {
-    sysparam_status_t status;
+    uint8_t macaddr[6];
+    sdk_wifi_get_macaddr(STATION_IF, macaddr);
+    
+    char *name_value = malloc(11);
+    snprintf(name_value, 11, "HAA-%02X%02X%02X", macaddr[3], macaddr[4], macaddr[5]);
+    name.value = HOMEKIT_STRING(name_value);
+    
     bool haa_setup = false;
     
     //sysparam_set_bool("setup", true);    // Force to enter always in setup mode. Only for tests. Keep comment for releases
     
-    status = sysparam_get_bool("setup", &haa_setup);
-    if (status == SYSPARAM_OK && haa_setup == true) {
+    sysparam_get_bool("setup", &haa_setup);
+    if (haa_setup) {
         uart_set_baud(0, 115200);
-        printf("\n\nHAA > Home Accessory Architect\nHAA > Developed by José Antonio Jiménez Campos (@RavenSystem)\nHAA > Version: %s\n\n", FIRMWARE_VERSION);
-        printf("HAA > Running in SETUP mode...\n");
-        wifi_config_init("HAA", NULL, NULL);
+        printf_header();
+        INFO("SETUP MODE");
+        wifi_config_init("HAA", NULL, NULL, name.value.string_value);
+        
     } else {
+        // Arming emergency Setup Mode
+        sysparam_set_bool("setup", true);
+        xTaskCreate(exit_emergency_setup_mode_task, "exit_emergency_setup_mode_task", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+        
+        // Filling Used GPIO Array
+        for (uint8_t g=0; g<17; g++) {
+            used_gpio[g] = false;
+        }
+        
+        sdk_os_timer_setfn(&setup_mode_toggle_timer, setup_mode_toggle, NULL);
+        
+        char *serial_value = malloc(13);
+        snprintf(serial_value, 13, "%02X%02X%02X%02X%02X%02X", macaddr[0], macaddr[1], macaddr[2], macaddr[3], macaddr[4], macaddr[5]);
+        serial.value = HOMEKIT_STRING(serial_value);
+        
         normal_mode_init();
     }
 }
