@@ -1411,21 +1411,21 @@ void autoswitch_task(void *pvParameters) {
 // --- CHECK ACTION CONDITIONS
 bool hkc_check_action_conditions(cJSON *json_relay) {
     bool condition_satisfied = true;
-    cJSON *json_conditions = cJSON_GetObjectItem(json_relay, ACTION_CONDITION);
+    cJSON *json_conditions = cJSON_GetObjectItemCaseSensitive(json_relay, ACTION_CONDITION);
     if (json_conditions != NULL) {
         for(uint8_t j=0; condition_satisfied && j<cJSON_GetArraySize(json_conditions); j++) {
-            const uint8_t gpio = (uint8_t) cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), PIN_GPIO)->valuedouble;
+            const uint8_t gpio = (uint8_t) cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_conditions, j), PIN_GPIO)->valuedouble;
             bool set_pullup_resistor = false;
             bool pullup_resistor = true;
-            if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), PULLUP_RESISTOR) != NULL ) {
+            if (cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_conditions, j), PULLUP_RESISTOR) != NULL ) {
                 pullup_resistor =
-                    (bool) cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), PULLUP_RESISTOR)->valuedouble;
+                    (bool) cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_conditions, j), PULLUP_RESISTOR)->valuedouble;
                 set_pullup_resistor = true;
             }
 
             bool is_set = true;
-            if (cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), BUTTON_PRESS_TYPE) != NULL &&
-                cJSON_GetObjectItem(cJSON_GetArrayItem(json_conditions, j), BUTTON_PRESS_TYPE)->valuedouble == 0) {
+            if (cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_conditions, j), BUTTON_PRESS_TYPE) != NULL &&
+                cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_conditions, j), BUTTON_PRESS_TYPE)->valuedouble == 0) {
                 is_set = false;
             }
 
@@ -1434,7 +1434,7 @@ bool hkc_check_action_conditions(cJSON *json_relay) {
 
             condition_satisfied = gpio_read(gpio) == is_set;
 
-            printf("HAA > Action condition GPIO %i, is_set=%i, satisfied=%i\n", gpio, is_set, condition_satisfied);
+            INFO("Action condition GPIO %i, is_set=%i, satisfied=%i\n", gpio, is_set, condition_satisfied);
        }
     }
     return condition_satisfied;
