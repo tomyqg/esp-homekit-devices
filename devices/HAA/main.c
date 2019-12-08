@@ -82,6 +82,7 @@
 #define STATUS_LED_GPIO                 "l"
 #define INVERTED                        "i"
 #define BUTTON_FILTER                   "f"
+#define ACTION_CONDITION_FILTER         "F"
 #define PWM_FREQ                        "q"
 #define ENABLE_HOMEKIT_SERVER           "h"
 #define ALLOW_INSECURE_CONNECTIONS      "u"
@@ -1409,9 +1410,75 @@ void autoswitch_task(void *pvParameters) {
 }
 
 // --- CHECK ACTION CONDITIONS
-bool hkc_check_action_conditions(cJSON *json_relay) {
+
+typedef struct {
+    bool used;
+    bool state;
+    bool unfiltered_state;
+    uint32_t unfiltered_change_time;
+} filtered_gpio_state_t;
+
+#define GPIO_COUNT (sizeof used_gpio / sizeof *used_gpio)
+static filtered_gpio_state_t filtered_gpio_state[GPIO_COUNT] = {0};
+static uint8_t action_condition_filter = 0;
+
+static void gpio_filter_callback(uint8_t gpio)
+{
+    INFO("#VV gpio %i changed", gpio);
+    if( gpio >= 0 && gpio < GPIO_COUNT && filtered_gpio_state[gpio].used ) {
+        bool state = gpio_read(gpio);
+        INFO("#VV gpio %i state=%i", gpio, state);
+        if( state != filtered_gpio_state[gpio].unfiltered_state ) {
+           filtered_gpio_state[gpio].unfiltered_state = state;
+           filtered_gpio_state[gpio].unfiltered_change_time = xTaskGetTickCountFromISR();
+        }
+    }
+}
+
+static bool get_filtered_gpio_state(const uint8_t gpio)
+{
+    if( action_condition_filter ) {
+        filtered_gpio_state_t state = filtered_gpio_state[gpio];
+        if( gpio >= 0 && gpio < GPIO_COUNT && state.used) {
+            uint32_t duration = (xTaskGetTickCountFromISR() - state.unfiltered_change_time) * portTICK_PERIOD_MS;
+
+            INFO("#VV gpio %i change duration %ims (threshold %ims)", gpio, duration, action_condition_filter);
+            if( duration >= action_condition_filter ) {
+               state.state = state.unfiltered_state;
+               INFO("#VV gpio %i filtered as %i", gpio, state.state);
+            } else {
+               INFO("#VV gpio %i changed %ims ago(< %ims), using state=%i", gpio, duration, action_condition_filter, state.state);
+            }
+            return state.state;
+        } else {
+            return false;
+        }
+    } else {
+        INFO("#VV gpio_read(%i)", gpio);
+        return gpio_read(gpio);
+    }
+}
+
+void hkc_init_gpio_filter(const uint8_t gpio)
+{
+    if( action_condition_filter ) {
+        INFO("#VV hkc_init_gpio_filter(%i)", gpio);
+        if( gpio >= 0 && gpio < GPIO_COUNT && !filtered_gpio_state[gpio].used ) {
+            bool state = gpio_read(gpio);
+            filtered_gpio_state[gpio].state = state;
+            filtered_gpio_state[gpio].unfiltered_state = state;
+            filtered_gpio_state[gpio].unfiltered_change_time = xTaskGetTickCountFromISR();
+            filtered_gpio_state[gpio].used = true;
+            INFO("#VV before gpio %i set interrupt", gpio);
+            gpio_set_interrupt(gpio, GPIO_INTTYPE_EDGE_ANY, gpio_filter_callback);
+            INFO("#VV after gpio %i init", gpio);
+        }
+    }
+}
+
+bool hkc_check_action_conditions(cJSON *json_context) {
     bool condition_satisfied = true;
-    cJSON *json_conditions = cJSON_GetObjectItemCaseSensitive(json_relay, ACTION_CONDITION);
+    cJSON *json_conditions = cJSON_GetObjectItemCaseSensitive(json_context, ACTION_CONDITION);
     if (json_conditions != NULL) {
         for(uint8_t j=0; condition_satisfied && j<cJSON_GetArraySize(json_conditions); j++) {
             const uint8_t gpio = (uint8_t) cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_conditions, j), PIN_GPIO)->valuedouble;
@@ -1432,7 +1499,7 @@ bool hkc_check_action_conditions(cJSON *json_relay) {
             if ( set_pullup_resistor && !used_gpio[gpio] )
                gpio_set_pullup(gpio, pullup_resistor, pullup_resistor);
 
-            condition_satisfied = gpio_read(gpio) == is_set;
+            condition_satisfied = get_filtered_gpio_state(gpio) == is_set;
 
             INFO("Action condition GPIO %i, is_set=%i, satisfied=%i\n", gpio, is_set, condition_satisfied);
        }
@@ -1491,6 +1558,9 @@ void do_actions(cJSON *json_context, const uint8_t int_action) {
         cJSON *json_acc_managers = cJSON_GetObjectItemCaseSensitive(actions, MANAGE_OTHERS_ACC_ARRAY);
         for(uint8_t i=0; i<cJSON_GetArraySize(json_acc_managers); i++) {
             cJSON *json_acc_manager = cJSON_GetArrayItem(json_acc_managers, i);
+            
+            if (!hkc_check_action_conditions(json_acc_manager))
+                continue;
             
             const uint8_t accessory = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_acc_manager, ACCESSORY_INDEX)->valuedouble;
             
@@ -1795,6 +1865,13 @@ void normal_mode_init() {
         uint8_t button_filter_value = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_config, BUTTON_FILTER)->valuedouble;
         adv_button_set_evaluate_delay(button_filter_value);
         INFO("Button filter: %i", button_filter_value);
+    }
+    
+    // Action condition filter
+    if (cJSON_GetObjectItemCaseSensitive(json_config, ACTION_CONDITION_FILTER) != NULL) {
+        uint8_t filter_value = (uint8_t) cJSON_GetObjectItemCaseSensitive(json_config, ACTION_CONDITION_FILTER)->valuedouble;
+        action_condition_filter = filter_value == 0 ? 0 : max(10, min(210, filter_value));
+        INFO("Action condition filter: %i", filter_value);
     }
     
     // PWM Frequency
@@ -2775,6 +2852,41 @@ void normal_mode_init() {
                     }
                 }
             }
+        }
+
+        // Action condition input GPIO filtering setup
+        for (uint8_t int_action=0; int_action<MAX_ACTIONS; int_action++) {
+            INFO("#VV Action condition input GPIO filtering setup action=%i", int_action);
+            char action[2];
+            itoa(int_action, action, 10);
+            INFO("#VV action=%s", action);
+            if (cJSON_GetObjectItemCaseSensitive(json_accessory, action) != NULL) {
+                void do_init(const cJSON *json_context)
+                {
+                    INFO("#VV do_init()")
+                    for(uint8_t j=0; j<cJSON_GetArraySize(json_context); j++) {
+                        INFO("#VV j=%i", j);
+                        cJSON *json_conditions = cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_context, j), ACTION_CONDITION);
+                        if (json_conditions != NULL) {
+                            for(uint8_t c=0; c<cJSON_GetArraySize(json_conditions); c++) {
+                                INFO("#VV c=%i", c);
+                                const uint8_t gpio = (uint8_t) cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(json_conditions, c), PIN_GPIO)->valuedouble;
+                                INFO("#VV gpio=%i", gpio);
+                                hkc_init_gpio_filter(gpio);
+                            }
+                        }
+                    }
+                }
+                if (cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(json_accessory, action), DIGITAL_OUTPUTS_ARRAY) != NULL) {
+                    INFO("#VV r");
+                    do_init( cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(json_accessory, action), DIGITAL_OUTPUTS_ARRAY) );
+                }
+                if (cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(json_accessory, action), MANAGE_OTHERS_ACC_ARRAY) != NULL) {
+                    INFO("#VV m");
+                    do_init( cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(json_accessory, action), MANAGE_OTHERS_ACC_ARRAY) );
+                }
+            }
+            INFO("#VV done.");
         }
         
         // Creating HomeKit Accessory
