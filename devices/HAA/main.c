@@ -83,6 +83,7 @@
 #define STATUS_LED_GPIO                     "l"
 #define INVERTED                            "i"
 #define BUTTON_FILTER                       "f"
+#define ACTION_CONDITION_FILTER             "F"
 #define PWM_FREQ                            "q"
 #define ENABLE_HOMEKIT_SERVER               "h"
 #define ALLOW_INSECURE_CONNECTIONS          "u"
